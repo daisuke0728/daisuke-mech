@@ -145,6 +145,7 @@ class Momentum_SGD():
                 layer.b += self.v['b'][layer_idx]
                 layer_idx += 1
 
+#学習係数を差分の大きさによって、変更することで、より早く最適解に行き着かせる
 class AdaGrad():
     def __init__(self,lr0=0.001):
         self.lr0 = lr0
@@ -152,18 +153,86 @@ class AdaGrad():
         self.network = None
     def setup(self,network):
         self.network = network
-        self.v = {'h': []} #vは辞書型、変化量を表す行列
+        self.v = {'W': [],'b': []} #vは辞書型、変化量を表す行列
         for layer in self.network.layers:
             if layer.param:
-                self.v['h'].append(0)
+                self.v['W'].append(np.zeros_like(layer.W))
+                self.v['b'].append(np.zeros_like(layer.b))
     def update(self):
         layer_idx = 0
         for layer in self.network.layers:
             if layer.param:
-                self.v['h'][layer_idx] += np.sum(layer.dW*layer.dW)
-                layer.W -= self.lr0/(math.sqrt(self.v['h'][layer_idx])+1e-8) * layer.dW
+                self.v['W'][layer_idx] += layer.dW*layer.dW
+                layer.W -= self.lr0/(np.sqrt(self.v['W'][layer_idx])+1e-8) * layer.dW
+                self.v['b'][layer_idx] += layer.db*layer.db
+                #print(self.v['b'][layer_idx])
+                layer.b -= self.lr0/(np.sqrt(self.v['b'][layer_idx])+1e-8) * layer.db
                 layer_idx += 1
-    
+
+class RMSprop():
+    def __init__(self,lr0=0.01,p=0.99,eps=1e-8):
+        self.lr0 = lr0
+        self.p = p
+        self.eps = eps
+        self.v = None
+        self.network = None
+    def setup(self,network):
+        self.network = network
+        self.v = {'W': [],'b':[]} #vは辞書型、変化量を表す行列
+        for layer in self.network.layers:
+            if layer.param:
+                self.v['W'].append(np.zeros_like(layer.W))
+                self.v['b'].append(np.zeros_like(layer.b))
+                                   
+    def update(self):
+        layer_idx = 0
+        for layer in self.network.layers:
+            if layer.param:
+                #epsは分母が０になるのを防ぐ
+                self.v['W'][layer_idx] = self.p*self.v['W'][layer_idx]+(1-self.p)*(layer.dW*layer.dW)
+                layer.W -= self.lr0/(np.sqrt(self.v['W'][layer_idx])+self.eps) * layer.dW
+                self.v['b'][layer_idx] = self.p*self.v['b'][layer_idx]+(1-self.p)*(layer.db*layer.db)
+                layer.b -= self.lr0/np.sqrt(self.v['b'][layer_idx]+self.eps) * layer.db
+                layer_idx += 1
+
+class Adam():
+    def __init__(self,lr0=0.01,p1=0.9,p2=0.999,eps=1e-8):
+        self.lr0 = lr0
+        self.p1 = p1
+        self.p2 = p2
+        self.eps = eps
+        self.m = None
+        self.v = None
+        self.network = None
+    def setup(self,network):
+        self.network = network
+        self.v = {'W': [],'b':[]} #vは辞書型、変化量を表す行列
+        self.m = {'W': [],'b':[]}
+        for layer in self.network.layers:
+            if layer.param:
+                self.v['W'].append(np.zeros_like(layer.W))
+                self.v['b'].append(np.zeros_like(layer.b))
+                self.m['W'].append(np.zeros_like(layer.W))
+                self.m['b'].append(np.zeros_like(layer.b))
+                                   
+    def update(self):
+        layer_idx = 0
+        for layer in self.network.layers:
+            if layer.param:
+                #epsは分母が０になるのを防ぐ
+                self.m['W'][layer_idx] = self.p1*self.m['W'][layer_idx]+(1-self.p1)*layer.dW
+                self.m['b'][layer_idx] = self.p1*self.m['b'][layer_idx]+(1-self.p1)*layer.db
+                self.v['W'][layer_idx] = self.p2*self.v['W'][layer_idx]+(1-self.p2)*(layer.dW*layer.dW)
+                self.v['b'][layer_idx] = self.p2*self.v['b'][layer_idx]+(1-self.p2)*(layer.db*layer.db)
+                mW = self.m['W'][layer_idx] / (1-self.p1)
+                mb = self.m['b'][layer_idx] / (1-self.p1)
+                vW = self.v['W'][layer_idx] / (1-self.p2)
+                vb = self.v['b'][layer_idx] / (1-self.p2)
+                
+                layer.W -= self.lr0/np.sqrt(vW+self.eps) * mW
+                layer.b -= self.lr0/np.sqrt(vb+self.eps) * mb
+                layer_idx += 1
+                
 #過学習を防ぐ:Dropout
 class Dropout:
     def __init__(self, dropout_rate=0.5):
@@ -367,22 +436,26 @@ range_theta = [-5,10] #rotational angle(°) min to max
 random_rate = 0 #percentage (0~100)
 
 #optimizerの選択
-optimizer_flag = 'AdaGrad' ## 'SGD' or 'momentum_SGD' or 'AdaGrad'
+optimizer_flag = 'Adam' ## 'SGD' or 'momentum_SGD' or 'AdaGrad'　or 'RMSprop' or'Adam'
 #optimizer parameter
-lr = 0.01 #learning rate
-#lr0:AdaGradは大きい方が良い
-lr0 = 2.0 #learning rate (init) for AdaGrad
+lr = 0.01 #learning rate for SGD/ momentum_SGD
 momentum = 0.9 #momentum
+lr0 = 0.005 #learning rate (init) for AdaGrad
+p0 = 0.99 # 指数的な減衰率　for RMSprop
+p1 = 0.9
+p2 = 0.999
+eps = 1e-8 #epsiron for RMSprop
 
 #層構造を定義
 model_list = [Linear(784, 1000, init_weight='HeNormal'),
               ReLU(),
-              Dropout(),
+              Dropout(dropout_rate=0.5),
               Linear(1000, 500, init_weight='HeNormal'),
               ReLU(),
-              Dropout(dropout_rate=0.3),
+              Dropout(dropout_rate=0.5),
               Linear(500,100,init_weight='HeNormal'),
               ReLU(),
+              Dropout(),
               Linear(100, 10, init_weight='HeNormal'),
               Softmax()]
 
@@ -432,11 +505,15 @@ X_test  = make_random(X_test,random_rate)
 #optimizerの選択
 #lrを変更可能
 if optimizer_flag == 'SGD':
-    optimizer = SGD(lr)
+    optimizer = SGD(lr=lr)
 elif optimizer_flag == 'momentum_SGD':
-    optimizer = Momentum_SGD(lr, momentum)
+    optimizer = Momentum_SGD(lr=lr, momentum=momentum)
 elif optimizer_flag == 'AdaGrad':
-    optimizer = AdaGrad(lr0)
+    optimizer = AdaGrad(lr0=lr0)
+elif optimizer_flag == 'RMSprop':
+    optimizer = RMSprop(lr0=lr0,p=p0,eps=eps)
+elif optimizer_flag == 'Adam':
+    optimizer = Adam(lr0=lr0,p1=p1,p2=p2,eps=eps)
     
 model = MLP(model_list)
 
